@@ -1,4 +1,4 @@
-all: Proxy.class Server.class ServerIntf.class ServerData.java
+all: Proxy.class Server.class ServerIntf.class ServerData.java LRUCache.java
 
 %.class: %.java
 	javac $<
