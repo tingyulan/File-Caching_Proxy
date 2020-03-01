@@ -37,114 +37,119 @@ public class Server extends UnicastRemoteObject implements ServerIntf {  // Serv
 
     public int GetFileLength(String path) throws RemoteException{
         System.out.println("GetFileLength");
+
         String server_path = server_root+path;
         System.out.println("server_path:"+server_path);
+
         File file = new File(server_path);
-        // System.out.println("BBBBBB");
-        if(!file.exists()) {return -1; }
-        // System.out.println("CCCCCC");
-        if(file.isDirectory()) {return -1; }
-        // System.out.println("DDDDDD");
+        if(!file.exists()) { return -2; }
+        if(file.isDirectory()) { return -3; }
+        
         System.out.println("GetFileLength:"+file.length());
-        // System.out.println("EEEEEE");
         return (int) file.length();
     }
 
-    public ServerData open(String path, int o, int proxy_version, int maxlen, int offset) throws RemoteException{
+    // GetLengthAndVersion
+    public ServerData GetLengthAndVersion(String path) throws RemoteException{
+        System.out.println("GetLengthAndVersion");
+        ServerData server_data;
+
+        String server_path = server_root+path;
+        System.out.println("server_path:"+server_path);
+        
+
+        File file = new File(server_path);
+        if(!file.exists()) {
+            server_data= new ServerData(-1, -1, -2);
+            return server_data;
+        }
+        if(file.isDirectory()) {
+            server_data= new ServerData(-1, -1, -2);
+            return server_data;
+        }
+
+        int length = (int) file.length();
+        System.err.println("GetFileLength:"+file.length());
+
+        if(!hmap_version.containsKey(path)){
+            hmap_version.put(path, 0);
+            System.err.println("No this file");
+        }
+        int server_version = hmap_version.get(path);
+        System.err.println("OPEN version:"+server_version);
+
+        server_data = new ServerData(server_version, length, 0);
+        return server_data;
+        // return (int) file.length();
+    }
+
+    public ServerData open(String path, int request_len, int offset) throws RemoteException{
         /* o: READ(read-only), WRITE(read/write), CREATE(read/write, create if needed),
 					CREATE_NEW(read/write, but file must not already exist)*/
                     
         System.out.println("OPEN");
         String server_path = server_root+path;
-        String permission;
-        // Boolean flg_first_reference=false;
-
+        // String permission;
         File file = new File(server_path);
-        boolean exist = file.exists();
-		boolean isDirectory = file.isDirectory(); 
-        // if(o == OpenOption.READ){ permission="r"; }
-        if(o == READ){ permission="r"; }
-        else{ permission="rw"; }
 
-        System.err.println("OPEN, exist:"+exist+" permission:"+permission+ " path:"+server_path+" o:"+o);
+        // boolean exist = file.exists();
+		// boolean isDirectory = file.isDirectory(); 
+        
+        // if(o == READ){ permission="r"; }
+        // else{ permission="rw"; }
 
-        // if(exist && o == OpenOption.CREATE_NEW){
-        if(exist && o == CREATE_NEW){
-            System.err.println("OPEN CREATE_NEW ERROR, file already exists");
-            byte[] result = new byte[0];
-            ServerData server_data = new ServerData(result, -2);
-            return server_data;
-            //return Errors.EEXIST; // pathname alread exists
-        }else if(isDirectory && permission.equals("rw")){  //pathname refers to a directory and the access requeste involved writing (that is, O_WRONLY or O_RDWR is set).
-            System.err.println("OPEN ERROR, try to open a directory with rw permission.");
-            byte[] result = new byte[0];
-            ServerData server_data = new ServerData(result, -3);
-            return server_data;
-            //return Errors.EISDIR;
-        // }else if( !exist && (o == OpenOption.READ||o == OpenOption.WRITE) ){
-        }else if( !exist && (o == READ||o == WRITE) ){
-            System.err.println("OPEN ERROR, permission read or write, but file not exists.");
-            byte[] result = new byte[0];
-            ServerData server_data = new ServerData(result, -4);
-            return server_data;
-            //return Errors.ENOENT; //no entry exists
-        }else {
-            try{
-                if(!hmap_version.containsKey(path)){
-                    hmap_version.put(path, 0);
-                }
-                int version = hmap_version.get(path);
-                System.err.println("OPEN version:"+version);
+        // System.err.println("OPEN, exist:"+exist+" permission:"+permission+ " path:"+server_path+" o:"+o);
 
-                // System.err.println("IN OPEN ELSE");
-                // if( proxy_version!=version ) {
-                RandomAccessFile raf = new RandomAccessFile(server_path, "rw");
-                // System.err.println("bbbbbbbbbbbbbb");
-                byte[] buf = new byte[maxlen];
-                // System.err.println("cccccccccc");
-                System.err.println("offset:"+offset+ " maxlen:"+maxlen);
-                raf.seek(offset);
-                int ret = raf.read(buf, 0, maxlen);
-                // System.err.println("ddddddddddddd");
-                raf.close();
-                // System.err.println("AOPEN, ret:"+ret);
-                // System.err.write(buf);
-                if(ret==-1){ret=0;}
-                byte[] result = new byte[ret];
-                System.err.println("BOPEN, ret:"+ret);
-                // System.err.write(result);
-                result = Arrays.copyOfRange(buf, 0, ret);
 
-                System.err.println("result.length:"+result.length);
-                
-                ServerData server_data = new ServerData(result, version);
-                // return version + "*@#*@#"  + result;
+        // if(exist && o == CREATE_NEW){
+        //     System.err.println("OPEN CREATE_NEW ERROR, file already exists");
+        //     byte[] result = new byte[0];
+        //     ServerData server_data = new ServerData(result, -2);
+        //     return server_data;
+        //     //return Errors.EEXIST; // pathname alread exists
+        // }else if(isDirectory && permission.equals("rw")){ 
+        //     //pathname refers to a directory and the access requeste involved writing (that is, O_WRONLY or O_RDWR is set).
+        //     System.err.println("OPEN ERROR, try to open a directory with rw permission.");
+        //     byte[] result = new byte[0];
+        //     ServerData server_data = new ServerData(result, -3);
+        //     return server_data;
+        //     //return Errors.EISDIR;
+        // }else if( !exist && (o == READ||o == WRITE) ){
+        //     System.err.println("OPEN ERROR, permission read or write, but file not exists.");
+        //     byte[] result = new byte[0];
+        //     ServerData server_data = new ServerData(result, -4);
+        //     return server_data;
+        //     //return Errors.ENOENT; //no entry exists
+        // }else {
 
-                System.err.println("server_data.GetVersion():" + server_data.GetVersion());
-                // System.out.write(server_data.GetData());
 
-                return server_data;
-                // } else {
-                //     // byte[] result = "**YouGetTheLatestVersion".getBytes();
-                //     byte[] result = new byte[0];
-                //     ServerData server_data = new ServerData(result, -1); //latest version
-                //     return server_data;
-                //     // return result;
-                // }
-            }catch(IOException e){
-                System.err.println("OPEN, IOException");
-                e.printStackTrace();
-                byte[] result = new byte[0];
-                ServerData server_data = new ServerData(result, -9); //latest version
-                return server_data;
-                // return -1;
+            if(!hmap_version.containsKey(path)){
+                hmap_version.put(path, 0);
+                System.err.println("Add file to record version");
             }
-        }
+            int server_version = hmap_version.get(path);
+            System.err.println("OPEN version:"+server_version);
 
-        // byte[] result = new byte[0];
-        // ServerData server_data = new ServerData(result, -9); //latest version
-        // return server_data;
-        // return result;
+            // if(proxy_version!=server_version) {
+                byte[] buf = new byte[request_len];
+                try{
+                    RandomAccessFile raf = new RandomAccessFile(server_path, "rw");
+                    System.err.println("offset:"+offset+ " request_len:"+request_len);
+                    raf.seek(offset);
+                    int ret = raf.read(buf, 0, request_len);
+                    raf.close();
+                    if(ret!=request_len){ System.err.println("OPEN, not read exactly request_len"); }
+                }catch(IOException e){
+                    System.err.println("OPEN, IOException");
+                    e.printStackTrace();
+                }
+                ServerData server_data = new ServerData(buf, server_version, (int)file.length());
+                return server_data;
+            // }else{
+            //     byte[] buf = new byte[0];
+            //     ServerData server_data = new ServerData(buf, server_version);
+            //     return server_data;
+            // }
     }
 
     // chunk: A flg to inficate chunk or not. 0:normal call, 1:chunk
@@ -170,7 +175,7 @@ public class Server extends UnicastRemoteObject implements ServerIntf {  // Serv
         return true;
     }
     
-    public boolean unlink(String path) throws RemoteException{
+    public int unlink(String path) throws RemoteException{
         System.out.println("UNLINK");
         String server_path = server_root+path;
         try {
@@ -178,15 +183,15 @@ public class Server extends UnicastRemoteObject implements ServerIntf {  // Serv
             boolean exists = file.exists();
 			boolean isDirectory = file.isDirectory(); 
 			System.err.println("UNLINK, path:"+path+" exists:"+exists+" isDirectory:"+isDirectory);
-			if (isDirectory){ System.err.println("UNLINK ERROR, isDirectory");} //return Errors.EISDIR;
-			if (!exists) { System.err.println("UNLINK ERROR, !exist");} //return Errors.ENOENT;
+			if (isDirectory){ System.err.println("UNLINK ERROR, isDirectory"); return -2; } //return Errors.EISDIR;
+			if (!exists) { System.err.println("UNLINK ERROR, !exist"); return -3; } //return Errors.ENOENT;
 
             file.delete();
         }catch (Exception e){
             System.err.println("UNLINK, Exception");
             e.printStackTrace();
         }
-        return true;        
+        return 0;        
     }
 
     public static void main(String[] args) throws RemoteException {
