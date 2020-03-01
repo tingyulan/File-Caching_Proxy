@@ -1,8 +1,9 @@
+// Data tye use to transfer from server to proxy
+
 import java.io.*;
-// import java.util.*;
 
 public class ServerData implements Serializable{ 
-    public byte[] data = new byte[0];
+    public byte[] data;
     public int version=-1;
     public int length=-1;
     public int errno=0;
@@ -14,13 +15,9 @@ public class ServerData implements Serializable{
     }
 
     public ServerData(int version, int length, int errno){
+        this.data = new byte[0];
         this.version = version;
         this.length = length;
         this.errno = errno;
     }
-
-    // public byte[] GetData() { return this.data; }
-    // public int GetVersion() {return this.version; }
-    // public int GetLength() { return this.length; }
-
 }

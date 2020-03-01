@@ -1,7 +1,7 @@
 import java.io.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-// import java.util.Arrays;
+import java.util.concurrent.CopyOnWriteArrayList; 
 
 import java.rmi.registry.LocateRegistry;
 import java.rmi.server.UnicastRemoteObject;
@@ -11,22 +11,10 @@ import java.rmi.Naming;
 import java.net.MalformedURLException;
 import java.rmi.NotBoundException;
 
-// class Cache_Struct{
-// 	RandomAccessFile raf;
-// 	String path;
-// 	Integer permission;
-// 	Integer version;
-// 	File file;
-// }
-
-
 class Proxy {
-	public static final int READ = 0;
-    public static final int WRITE = 1;
-    public static final int CREATE = 2;
-    public static final int CREATE_NEW = 3;
+	private static final boolean DEBUG = true;
 	public static final int VERSION_OFFSET = 2000;
-
+	
 	public static int fd_count = 0;
 	public static Map <Integer, RandomAccessFile> hmap_fdraf = new ConcurrentHashMap <Integer, RandomAccessFile> ();
 	public static Map <Integer, String> hmap_fdpath = new ConcurrentHashMap <Integer, String> ();
@@ -35,13 +23,12 @@ class Proxy {
 	public static Map <String, Integer> hmap_pathversion = new ConcurrentHashMap <String, Integer> ();
 	private final static Object fd_lock = new Object();
 	public static ServerIntf server = null;
-	// public static Cache_Struct[] Cache = new Cache_Struct[1024];
 	public static String cache_root;
 	public static int cache_size;
 	public static LRUCache cache;
 	public static int RemoteMaxLen = 100000;  //100000
-	// public static int remain_cache_size;
 
+	// Return raf from a given file descriptor
 	private static int GetFdFromRaf(HashMap<Integer, RandomAccessFile> hmap_fdraf, RandomAccessFile raf) {
 		Set set = hmap_fdraf.entrySet();
 		int fd=0;
@@ -56,6 +43,7 @@ class Proxy {
 		return fd;
 	}
 
+	// Return file descriptor from a given path
 	private static int GetFdFromPath(HashMap<Integer, String> hmap_fdpath, String path) {
 		Set set = hmap_fdpath.entrySet();
 		int fd=0;
@@ -77,12 +65,15 @@ class Proxy {
 		return permission;
 	}
 
+	// path is original path, cache_path is the path with cache_root and version number
+	// This function convert cache_path back to origin path
 	private static String remove_cache_root(String cache_path){
 		String path_version = cache_path.substring(cache_root.length(), cache_path.length());
 		String[] path = path_version.split("\\*"); 
 		return path[0];
 	}
 
+	// Copy a file locally
 	private static int CopyFile(File source, File dest) throws IOException {
 		InputStream in = null;
 		OutputStream out = null;
@@ -94,7 +85,6 @@ class Proxy {
 			out = new FileOutputStream(dest);
 			while ((len = in.read(buf)) > 0) {
 				total_len += len;
-				// out.write(buf, 0, len);
 			}
 		} finally {
 			in.close();
@@ -103,16 +93,27 @@ class Proxy {
 		return total_len;
 	}
 
+	// Keep getParentFile() and check if it exist or not, if not, create parent directory.
 	private static void mkdirParents(File file){
 		while(!file.getParentFile().exists()){
 			mkdirParents(file.getParentFile());
 			new File(file.getParent()).mkdirs();
 		}
 	}
+
+	private static void DeleteVictimInfo(List<String> EvictList){
+		int i=0;
+		for(i=0; i<EvictList.size(); i++){
+			String victim_path = EvictList.get(i);
+
+			String pure_path = remove_cache_root(victim_path);
+			hmap_pathversion.remove(pure_path);
+		}
+    }
 	
 	private static class FileHandler implements FileHandling {
-		// public static int fd_count = 0;
 
+		// Generate unique file descriptor
 		public int GenerateFd() {
 			synchronized(fd_lock) {
 				fd_count = fd_count+1;
@@ -120,15 +121,12 @@ class Proxy {
 			}
 		}
 
-		public synchronized int open( String path, OpenOption o ) {
+		public int open( String path, OpenOption o ) {
 			/* o: READ(read-only), WRITE(read/write), CREATE(read/write, create if needed),
 					CREATE_NEW(read/write, but file must not already exist)*/
-			// synchronized (FileHandler.class) {
-				// path = "largelargefile.txt";
-				// path = "slow_write.txt";
-				System.out.println("OPEN");
+			synchronized (FileHandler.class){
+				// path = "A";
 				System.err.println("OPEN, path:"+path);
-				System.err.println("OPEN, OpenOption:"+o);
 				
 				// path is not reference out of root
 				String can_path=null, can_path2=null;
@@ -151,9 +149,6 @@ class Proxy {
 				int ret=-1, fd=-1;
 				RandomAccessFile raf=null;
 				byte[] buf = new byte[RemoteMaxLen];
-				// int ver = 0;
-				// int option = -1;
-				// int server_version = -1;
 				int offset = 0;
 				boolean flg_first = true;
 				String cache_path = null;
@@ -161,26 +156,11 @@ class Proxy {
 				boolean flg_cache_latest_version = false;
 				int request_len = -1;
 				String permission;
-
-				// switch(o){
-				// 	case READ:
-				// 		option=READ; break;
-				// 	case WRITE:
-				// 		option=WRITE; break;
-				// 	case CREATE:
-				// 		option=CREATE; break;
-				// 	case CREATE_NEW:
-				// 		option=CREATE_NEW; break;
-				// }
 				
-				
-				// Check file len on server side
-				// int total_len = -1; 
+				// Get file information from server
 				ServerData server_lenver=null;
 				try { server_lenver = server.GetLengthAndVersion(path); }
-				// try{ total_len = server.GetFileLength(path); } //return -2:file not exits, -3:isDirectory
 				catch(Exception e) { e.printStackTrace(); }
-				// System.err.println("file.GetFileLength:"+ total_len);
 
 				// Deal with Error Messages
 				boolean exists = true;
@@ -207,14 +187,13 @@ class Proxy {
 
 
 				fd = GenerateFd();
-				System.err.println("OPEN fd:"+fd);
 
 				// Check local version
 				int version; // local cache version, -1:no local copy
 				if(!hmap_pathversion.containsKey(path)) { version = -1; }
 				else{ version = hmap_pathversion.get(path); }
 				flg_cache_latest_version = ( server_lenver.version==version );
-				System.err.println("server_version:"+server_lenver.version+"  cache_version:"+version);
+				System.err.println("server_version:"+server_lenver.version+"  cache_version:"+version+" len:"+server_lenver.length);
 				
 				// This file does not exist on the server, create a file locally.
 				if(!exists && (o == OpenOption.CREATE || o == OpenOption.CREATE_NEW)){  //can delete option conditioon
@@ -237,10 +216,8 @@ class Proxy {
 				int total_len = server_lenver.length;
 				if(flg_cache_latest_version){
 					if(o == OpenOption.READ){ // read-only
-						// version = hmap_pathversion.get(path);
 						cache_path = cache_root+path + "*ver" + version;
 						file = new File(cache_path);
-						// mkdirParents(file);
 						try {raf = new RandomAccessFile(file, "r"); }
 						catch(Exception e) {e.printStackTrace();}
 
@@ -248,20 +225,19 @@ class Proxy {
 						hmap_fdpath.put(fd, cache_path);
 						hmap_fddirty.put(fd, false);
 						hmap_fdpermission.put(fd, 0); //read only
-						System.err.println("OPEN  fd:"+fd+" raf:" +raf+ " cache_path:"+cache_path); 
 						cache.AddUser(cache_path);
 					}else{ // write is possible.
 						cache_path = cache_root+path + "*verw" + fd;
 						file = new File(cache_path);
-						// mkdirParents(file);
 						try {raf = new RandomAccessFile(file, "rw"); }
 						catch(Exception e) {e.printStackTrace();}
 
-						// version = hmap_pathversion.get(path);
 						String latest_version_path = cache_root+path + "*ver" + version;
-						// String cache_path = cache_root+path + "*verw" + fd;
 						File file_source = new File(latest_version_path);
-						// File file = new File(cache_path);
+
+						List<String> EvictList = new CopyOnWriteArrayList<String>();
+						EvictList = cache.AddFile(cache_path, (int)file.length());
+						DeleteVictimInfo(EvictList);
 
 						try {
 							int file_len = CopyFile(file_source, file);
@@ -270,9 +246,6 @@ class Proxy {
 							hmap_fdpath.put(fd, cache_path);
 							hmap_fddirty.put(fd, false);
 							hmap_fdpermission.put(fd, 1); //write
-							System.err.println("OPEN(read-write) fd:"+fd+" raf:" +raf+ " cache_path:"+cache_path); 
-
-							cache.AddFile(cache_path, file_len);
 						} catch(IOException e){
 							System.err.println("OPEN(read-write) WRITE EXCEPTION"); 
 							e.printStackTrace();
@@ -290,7 +263,6 @@ class Proxy {
 						hmap_fdpath.put(fd, cache_path);
 						hmap_fddirty.put(fd, false);
 						hmap_fdpermission.put(fd, 0); //read only
-						System.err.println("OPEN  fd:"+fd+" raf:" +raf+ " cache_path:"+cache_path); 
 						cache.AddUser(cache_path);
 					}else{ // write is possible.
 						cache_path = cache_root+path + "*verw" + fd;
@@ -299,37 +271,29 @@ class Proxy {
 						try {raf = new RandomAccessFile(file, "rw"); }
 						catch(Exception e) {e.printStackTrace();}
 
-						// try {
-							hmap_fdraf.put(fd, raf);
-							hmap_fdpath.put(fd, cache_path);
-							hmap_fddirty.put(fd, false);
-							hmap_fdpermission.put(fd, 1); //write
-							System.err.println("OPEN(read-write) fd:"+fd+" raf:" +raf+ " cache_path:"+cache_path); 
+						hmap_fdraf.put(fd, raf);
+						hmap_fdpath.put(fd, cache_path);
+						hmap_fddirty.put(fd, false);
+						hmap_fdpermission.put(fd, 1); //write
 
-							cache.AddFile(cache_path, 0);
-						// } catch(IOException e){
-						// 	System.err.println("OPEN(read-write) WRITE EXCEPTION"); 
-						// 	e.printStackTrace();
-						// }
+						cache.AddFile(cache_path, 0);
+
 					}
 				}else { // Server file exits, proxy file is not latest version
-					System.err.println("OPEN, Going to request data from server!!");
-
+					
 					while(total_len > 0){
 						try{
 							if(total_len<=RemoteMaxLen){ request_len = total_len; }
 							else{ request_len = RemoteMaxLen; }
 							
 							ServerData server_data = server.open(path, request_len, offset);
-							// server_version = server_data.GetVersion();
 							
 							buf = server_data.data;
-							// System.out.write(buf);
 							total_len -= request_len;
 							offset += request_len;
-							System.err.println("OPEN, buf.length:"+buf.length+"  total_len:"+total_len + " request_len:"+request_len);
 						} catch(Exception e){ System.err.println("OPEN EXCEPTION"); }
 
+						// Open a new file in cache
 						if(flg_first){
 							if(o == OpenOption.READ){
 								cache_path = cache_root+path + "*ver" + server_lenver.version;
@@ -345,13 +309,15 @@ class Proxy {
 								catch(Exception e) {e.printStackTrace();}
 							}
 							cache.AddFile(cache_path, 0);
-							flg_first=false;
+							
 						}
 
+						
+
+						// write file contents get from proxy into local file
 						try {
 							raf.write(buf);
 							if(total_len==0) {raf.seek(0);}
-							System.err.println("OPEN write buf.length:"+buf.length);
 
 							hmap_fdraf.put(fd, raf);
 							hmap_fdpath.put(fd, cache_path);
@@ -363,50 +329,54 @@ class Proxy {
 								hmap_fdpermission.put(fd, 1); //write
 							}
 
-							// cache.AddFile(cache_path, buf.length);
-							cache.AddLen(cache_path, buf.length);
-							System.err.println("OPEN  fd:"+fd+" raf:" +raf+ " cache_path:"+cache_path); 
+							// Check cache to delete all older version that is no client refernce to it now
+							if(flg_first){
+								cache.DeleteOldVersion(path, cache_path);
+								flg_first=false;
+							}
+
+							List<String> EvictList = new CopyOnWriteArrayList<String>();
+							EvictList = cache.AddLen(cache_path, buf.length);
+							DeleteVictimInfo(EvictList);
+
 						} catch(IOException e){
 							System.err.println("OPEN WRITE EXCEPTION"); 
 							e.printStackTrace();
 						}
 					}
-
-					// Check cache to delete all older version that is no on refernce to it now
-					cache.DeleteOldVersion(path, cache_path);
-
 				}
 
-				// System.err.println("OPEN just before returning"); 
+				if(DEBUG){
+					System.err.println("**********OPEN**********");
+					cache.PrintCache();
+				}
 				return fd;
-			// }
+			}
 		}
 
 		public synchronized int close( int fd ) {
-			System.out.println("CLOSE");
 			try{
+				// Deal with error mssages
 				if(!hmap_fdpath.containsKey(fd)){ System.err.println("CLOSE ERROR, no fd"); return Errors.EBADF; }
-
 				String cache_path = hmap_fdpath.get(fd);
 				File file = new File(cache_path);
 				if(!file.exists()) {System.err.println("CLOSE ERROR, file not exists"); return Errors.ENOENT; } // File does not exists
 				boolean exists = file.exists();
 				boolean isDirectory = file.isDirectory(); 
-				if (isDirectory){ System.out.println("WRITE ERROR, isDirectory"); return Errors.EISDIR; }
-				if (!exists) { System.out.println("WRITE ERROR, !exists"); return Errors.ENOENT; }
+				if (isDirectory){ System.err.println("WRITE ERROR, isDirectory"); return Errors.EISDIR; }
+				if (!exists) { System.err.println("WRITE ERROR, !exists"); return Errors.ENOENT; }
 
-				System.err.println("CLOSE, cache_path:"+ cache_path + " exists:"+ exists + " isDir:"+isDirectory);
-
+				// write modified file to server
 				Boolean flg_dirty = hmap_fddirty.get(fd);
 				boolean chunk=false;
 				String path=remove_cache_root(cache_path);
 				if (flg_dirty){
-					System.err.println("In dirty, fd:"+fd);
 					RandomAccessFile raf = hmap_fdraf.get(fd);
 					raf.seek(0);
 					int file_len = (int)raf.length();
 					byte[] buf = new byte[RemoteMaxLen];
 					int push_len;
+					long offset=0;
 					while(file_len>0) {
 						if(file_len>RemoteMaxLen){ push_len = RemoteMaxLen; }
 						else{push_len = file_len;}
@@ -416,13 +386,13 @@ class Proxy {
 						byte[] exact_buf = new byte[buf_len];
 						exact_buf = Arrays.copyOfRange(buf, 0, buf_len);
 						path = remove_cache_root(cache_path);
-						server.write(path, exact_buf, chunk);
+						offset = server.write(path, exact_buf, offset);
 						chunk = true;
 					}
 				}
 				
+				// close random access file and delete its info in hashmap
 				RandomAccessFile raf = hmap_fdraf.get(fd);
-				System.err.println("CLOSE fd:"+fd+" cache_path:"+cache_path+" raf:"+raf);
 				raf.close();  //Does not return a value
 
 				RandomAccessFile flg_hmap_fdraf;
@@ -434,35 +404,29 @@ class Proxy {
 				flg_hmap_fdpermission = hmap_fdpermission.remove(fd);
 				flg_hmap_fddirty = hmap_fddirty.remove(fd);
 				cache.DeleteUser(cache_path);
-				// System.err.println("Finish cache.DeleteUser");
 
+				// If it is a private copy for writer, delete that file immediately
 				if(flg_dirty){
-					// File file_detele = new File(cache_path);
-					// file_detele.delete();
-					cache.RemoveFileFromProxy(cache_path);
+					cache.RemoveFileFromProxy(cache_path, true);
 					cache.RemoveFileFromArrivalSeq(cache_path);
-				} else if( cache.GetUsersNum(path)==0 ){
-					System.err.println("Check fresh cache");
-					int proxy_version = hmap_pathversion.get(path);
+				}
+				// close() returns zero on success
 
-					int file_version = Integer.parseInt( cache_path.substring(path.length()+1, cache_path.length()) );
-					if (file_version<proxy_version){
-						cache.RemoveFileFromProxy(cache_path);
-						cache.RemoveFileFromArrivalSeq(cache_path);
-					}
+				if(DEBUG){
+					System.err.println("**********CLOSE**********");
+					cache.PrintCache();
 				}
 
-				return 0;  // close() returns zero on success
+				return 0;  
 			}catch(IOException e){
 				System.err.println("CLOSE ERROR");
 				e.printStackTrace();
 				return Errors.ENOENT;
 			}
-			// return Errors.ENOSYS;
 		}
 
 		public synchronized long write( int fd, byte[] buf ) {
-			System.out.println("WRITE");
+			// Handle error messages
 			if(!hmap_fdpath.containsKey(fd)){ System.err.println("WRITE ERROR, no fd:"+fd); return Errors.EBADF; }
 
 			// fd should be open
@@ -470,24 +434,20 @@ class Proxy {
 			if(path==null) { System.err.println("WRITE ERROR, path is null"); return Errors.EBADF; } //fd is not a valid file descriptor or is not open for writing.
 			
 			int permi = hmap_fdpermission.get(fd);
-			if (permi==0){ System.out.println("WRITE ERROR, can not write to read only file"); return Errors.EBADF; }
+			if (permi==0){ System.err.println("WRITE ERROR, can not write to read only file"); return Errors.EBADF; }
 			
 			// path have to exists, and can not be a directory
 			File file = new File(path);
 			boolean exists = file.exists();
 			boolean isDirectory = file.isDirectory(); 
-			if (isDirectory){ System.out.println("WRITE ERROR, isDirectory"); return Errors.EISDIR; }
-			if (!exists) { System.out.println("WRITE ERROR, !exists"); return Errors.ENOENT; }
+			if (isDirectory){ System.err.println("WRITE ERROR, isDirectory"); return Errors.EISDIR; }
+			if (!exists) { System.err.println("WRITE ERROR, !exists"); return Errors.ENOENT; }
 
-			System.err.println("WRITE, path:"+path+" exists:"+exists+" isDirectory:"+isDirectory);
-
-			// int ret;
+			// write buf into local file
 			try{
 				RandomAccessFile raf = hmap_fdraf.get(fd);
-				System.err.println("WRITE raf:"+raf+" fd:"+fd);
 				raf.write(buf, 0, buf.length);
 				hmap_fddirty.put(fd, true);
-				System.err.println("WRITE, length:"+ buf.length);
 				return buf.length;
 			}catch(IOException e){
 				System.err.println("WRITE ERROR");
@@ -496,28 +456,27 @@ class Proxy {
 			}
 		}
 
+
+		// read local cache file
 		public long read( int fd, byte[] buf ) {
-			System.out.println("READ");
+			// Deal with error messages
 			if(!hmap_fdpath.containsKey(fd)){ System.err.println("READ ERROR, no fd"); return Errors.EBADF; }
 			
 			// fd should be open
 			String path = hmap_fdpath.get(fd);
-			System.err.println("READ fd:"+fd+" path:"+path);
 
 			// path have to exists, and can not be a directory
 			File file = new File(path);
 			boolean exists = file.exists();
 			boolean isDirectory = file.isDirectory(); 
-			// System.err.println("READ, path:"+path+" exists:"+exists+" isDirectory:"+isDirectory);
 			if (isDirectory){ System.err.println("READ ERROR, isDirectory"); return Errors.EISDIR; }
 			if (!exists) { System.err.println("READ ERROR, !exist"); return Errors.ENOENT; }
 
+			// read file
 			long ret;
 			try{
 				RandomAccessFile fd_java = hmap_fdraf.get(fd);
-				// System.err.println("READ, fd:"+fd+ " raf:"+fd_java);
 				ret = fd_java.read(buf);
-				System.err.println("READ, ret:"+ret);
 				if (ret==-1){return 0;}  // End of file has been reached
 				else {return ret;}
 			}catch(IOException e){
@@ -526,23 +485,16 @@ class Proxy {
 			}
 		}
 
-		// need to return new position
+		// Return new position
 		public long lseek( int fd, long pos, LseekOption o ) {
-			System.out.println("LSEEK");
-			System.out.println("LSEEK option:"+o);
 			long new_pos;
 			if(!hmap_fdpath.containsKey(fd)){ System.err.println("LSEEK ERROR, no fd"); return Errors.EBADF; }
 
 			String path = hmap_fdpath.get(fd);
-			System.err.println("LSEEk fd:"+fd+" path:"+path);
-			// if(path==null) { System.err.println("LSEEK ERROR, IN path==null"); return Errors.EBADF; }
-
-			// int permi = hmap_fdpermission.get(fd);
-			// String permission = permi_to_permission(permi);
+			
 			File file = new File(path);
 			boolean exists = file.exists();
 			boolean isDirectory = file.isDirectory(); 
-			System.err.println("LSEEK, path:"+path+" exists:"+exists+" isDirectory:"+isDirectory);
 			if (isDirectory){ System.err.println("LSEEK ERROR, isDirectory"); return Errors.EISDIR; }
 			if (!exists) { System.err.println("LSEEK ERROR, !exist"); return Errors.ENOENT; }		
 			
@@ -561,9 +513,8 @@ class Proxy {
 			}
 		}
 
+		// Call server to unlink a file, and make sure it is unlink successfully
 		public synchronized int unlink( String path ) {
-			System.out.println("UNLINK");
-			System.err.println("UNLINK, path:"+path);
 			int ret=-1;
 
 			try{
@@ -580,7 +531,6 @@ class Proxy {
 		}
 
 		public void clientdone() {
-			System.out.println("CLIENTDONE");
 			return;
 		}
 

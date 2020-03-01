@@ -23,4 +23,4 @@ LD_PRELOAD=../lib/lib440lib.so ./../tools/440cat ./../README
 
 cat README | LD_PRELOAD=../lib/lib440lib.so ./../tools/440write output.txt
 
-tar cvzf ../mysolution.tgz Makefile Proxy.java Server.java ServerIntf.java ServerData.java LRUCache.java
+tar cvzf ../mysolution.tgz Makefile Proxy.java Server.java ServerIntf.java ServerData.java LRUCache.java project2.pdf
