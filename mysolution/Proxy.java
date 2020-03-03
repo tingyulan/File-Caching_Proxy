@@ -2,6 +2,7 @@ import java.io.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList; 
+import java.nio.file.Files;
 
 import java.rmi.registry.LocateRegistry;
 import java.rmi.server.UnicastRemoteObject;
@@ -26,7 +27,7 @@ class Proxy {
 	public static String cache_root;
 	public static int cache_size;
 	public static LRUCache cache;
-	public static int RemoteMaxLen = 100000;  //100000
+	public static int RemoteMaxLen = 100000;
 
 	// Return raf from a given file descriptor
 	private static int GetFdFromRaf(HashMap<Integer, RandomAccessFile> hmap_fdraf, RandomAccessFile raf) {
@@ -74,26 +75,28 @@ class Proxy {
 	}
 
 	// Copy a file locally
-	private static int CopyFile(File source, File dest) throws IOException {
+	private static void CopyFile(String s, String d) throws IOException{
+		File source = new File(s);
+		File dest = new File(d);
+
 		InputStream in = null;
 		OutputStream out = null;
 		byte[] buf = new byte[1024];
 		int len;
-		int total_len = 0;
 		try {
 			in = new FileInputStream(source);
 			out = new FileOutputStream(dest);
 			while ((len = in.read(buf)) > 0) {
-				total_len += len;
+				out.write(buf, 0, len);
 			}
 		} finally {
 			in.close();
 			out.close();
 		}
-		return total_len;
 	}
 
-	// Keep getParentFile() and check if it exist or not, if not, create parent directory.
+	// Keep getParentFile() and check if it exist or not,
+	// if not, create parent directory.
 	private static void mkdirParents(File file){
 		while(!file.getParentFile().exists()){
 			mkdirParents(file.getParentFile());
@@ -101,6 +104,8 @@ class Proxy {
 		}
 	}
 
+	// Delete local files version for a specific victim
+	// to indicate we do not have this file anymore.
 	private static void DeleteVictimInfo(List<String> EvictList){
 		int i=0;
 		for(i=0; i<EvictList.size(); i++){
@@ -112,7 +117,6 @@ class Proxy {
     }
 	
 	private static class FileHandler implements FileHandling {
-
 		// Generate unique file descriptor
 		public int GenerateFd() {
 			synchronized(fd_lock) {
@@ -125,8 +129,6 @@ class Proxy {
 			/* o: READ(read-only), WRITE(read/write), CREATE(read/write, create if needed),
 					CREATE_NEW(read/write, but file must not already exist)*/
 			synchronized (FileHandler.class){
-				// path = "A";
-				System.err.println("OPEN, path:"+path);
 				
 				// path is not reference out of root
 				String can_path=null, can_path2=null;
@@ -185,7 +187,7 @@ class Proxy {
 					return Errors.ENOENT;
 				}
 
-
+				// Generate unique file descriptor
 				fd = GenerateFd();
 
 				// Check local version
@@ -193,7 +195,6 @@ class Proxy {
 				if(!hmap_pathversion.containsKey(path)) { version = -1; }
 				else{ version = hmap_pathversion.get(path); }
 				flg_cache_latest_version = ( server_lenver.version==version );
-				System.err.println("server_version:"+server_lenver.version+"  cache_version:"+version+" len:"+server_lenver.length);
 				
 				// This file does not exist on the server, create a file locally.
 				if(!exists && (o == OpenOption.CREATE || o == OpenOption.CREATE_NEW)){  //can delete option conditioon
@@ -204,6 +205,7 @@ class Proxy {
 					try {raf = new RandomAccessFile(file, "rw"); }
 					catch(Exception e) {e.printStackTrace();}
 
+					// Add information for this client request
 					hmap_fdraf.put(fd, raf);
 					hmap_fdpath.put(fd, cache_path);
 					hmap_fddirty.put(fd, true);
@@ -212,7 +214,8 @@ class Proxy {
 					return fd;
 				}
 
-				// File exists on server side. Proxy get latest version
+				// File exists on server side
+				// Proxy gets latest version
 				int total_len = server_lenver.length;
 				if(flg_cache_latest_version){
 					if(o == OpenOption.READ){ // read-only
@@ -221,6 +224,7 @@ class Proxy {
 						try {raf = new RandomAccessFile(file, "r"); }
 						catch(Exception e) {e.printStackTrace();}
 
+						// Add information for this client request
 						hmap_fdraf.put(fd, raf);
 						hmap_fdpath.put(fd, cache_path);
 						hmap_fddirty.put(fd, false);
@@ -235,13 +239,15 @@ class Proxy {
 						String latest_version_path = cache_root+path + "*ver" + version;
 						File file_source = new File(latest_version_path);
 
+						// Check cache available size, and evict files if necessary
 						List<String> EvictList = new CopyOnWriteArrayList<String>();
-						EvictList = cache.AddFile(cache_path, (int)file.length());
+						EvictList = cache.AddFile(cache_path, (int)file_source.length());
 						DeleteVictimInfo(EvictList);
 
 						try {
-							int file_len = CopyFile(file_source, file);
-							
+							CopyFile(latest_version_path, cache_path);
+
+							// Add information for this client request
 							hmap_fdraf.put(fd, raf);
 							hmap_fdpath.put(fd, cache_path);
 							hmap_fddirty.put(fd, false);
@@ -259,6 +265,7 @@ class Proxy {
 						try {raf = new RandomAccessFile(file, "r"); }
 						catch(Exception e) {e.printStackTrace();}
 
+						// Add information for this client request
 						hmap_fdraf.put(fd, raf);
 						hmap_fdpath.put(fd, cache_path);
 						hmap_fddirty.put(fd, false);
@@ -271,16 +278,15 @@ class Proxy {
 						try {raf = new RandomAccessFile(file, "rw"); }
 						catch(Exception e) {e.printStackTrace();}
 
+						// Add information for this client request
 						hmap_fdraf.put(fd, raf);
 						hmap_fdpath.put(fd, cache_path);
 						hmap_fddirty.put(fd, false);
 						hmap_fdpermission.put(fd, 1); //write
-
 						cache.AddFile(cache_path, 0);
 
 					}
 				}else { // Server file exits, proxy file is not latest version
-					
 					while(total_len > 0){
 						try{
 							if(total_len<=RemoteMaxLen){ request_len = total_len; }
@@ -312,12 +318,14 @@ class Proxy {
 							
 						}
 
-						
-
 						// write file contents get from proxy into local file
 						try {
+							List<String> EvictList = new CopyOnWriteArrayList<String>();
+							EvictList = cache.AddLen(cache_path, buf.length);
+							DeleteVictimInfo(EvictList);
+
 							raf.write(buf);
-							if(total_len==0) {raf.seek(0);}
+							if(total_len==0) {raf.seek(0);} //end of request file from server
 
 							hmap_fdraf.put(fd, raf);
 							hmap_fdpath.put(fd, cache_path);
@@ -334,11 +342,6 @@ class Proxy {
 								cache.DeleteOldVersion(path, cache_path);
 								flg_first=false;
 							}
-
-							List<String> EvictList = new CopyOnWriteArrayList<String>();
-							EvictList = cache.AddLen(cache_path, buf.length);
-							DeleteVictimInfo(EvictList);
-
 						} catch(IOException e){
 							System.err.println("OPEN WRITE EXCEPTION"); 
 							e.printStackTrace();
@@ -346,10 +349,6 @@ class Proxy {
 					}
 				}
 
-				if(DEBUG){
-					System.err.println("**********OPEN**********");
-					cache.PrintCache();
-				}
 				return fd;
 			}
 		}
@@ -395,6 +394,7 @@ class Proxy {
 				RandomAccessFile raf = hmap_fdraf.get(fd);
 				raf.close();  //Does not return a value
 
+				// Remove all information related to this client's request
 				RandomAccessFile flg_hmap_fdraf;
 				String flg_hmap_fdpath;
 				int flg_hmap_fdpermission;
@@ -405,18 +405,13 @@ class Proxy {
 				flg_hmap_fddirty = hmap_fddirty.remove(fd);
 				cache.DeleteUser(cache_path);
 
-				// If it is a private copy for writer, delete that file immediately
+				// If it is a private copy for writer, delete that file immediately after ir close
 				if(flg_dirty){
 					cache.RemoveFileFromProxy(cache_path, true);
 					cache.RemoveFileFromArrivalSeq(cache_path);
 				}
+
 				// close() returns zero on success
-
-				if(DEBUG){
-					System.err.println("**********CLOSE**********");
-					cache.PrintCache();
-				}
-
 				return 0;  
 			}catch(IOException e){
 				System.err.println("CLOSE ERROR");
@@ -550,9 +545,6 @@ class Proxy {
 		cache_root = args[2]+"/";
 		cache_size = Integer.parseInt(args[3]);
 		cache = new LRUCache(cache_size);
-		// remain_cache_size = cache_size;
-
-		System.err.println("url, "+url);
 		
 		try {
 			server =  (ServerIntf) Naming.lookup(url);

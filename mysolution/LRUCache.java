@@ -1,4 +1,5 @@
 // Implementation of LRU cache replacement policy
+// "close" is used to indicate which file is most recently used
 
 import java.io.*;
 import java.util.*;
@@ -28,9 +29,10 @@ public class LRUCache{
         this.available = cache_size;
     }
 
+    // Show all files in cache now.
     public synchronized void PrintCache(){
         for (CacheFile file: ArrivalSeq){
-            System.out.println(file.path+"  clients:"+file.users);
+            System.out.println(file.path+"  clients:"+file.users+" available:"+available);
         }
     }
 
@@ -72,7 +74,6 @@ public class LRUCache{
             if (file.path.equals(path)){
                 renew_file = new CacheFile(file.path, file.len);
                 renew_file.users = file.users+1;
-                // file.users += 1;
                 ArrivalSeq.remove(idx);
                 ArrivalSeq.add(renew_file);
                 break;
@@ -83,9 +84,16 @@ public class LRUCache{
     // Update file's refernce user number
     // This fuction is called if a user close()
     public synchronized void DeleteUser(String path){
-        for (CacheFile file: ArrivalSeq){
+        CacheFile renew_file;
+        int idx;
+        for(idx=0; idx<ArrivalSeq.size(); idx++){
+            CacheFile file = ArrivalSeq.get(idx);
+        // for (CacheFile file: ArrivalSeq){
             if (file.path.equals(path)){
-                file.users -= 1;
+                renew_file = new CacheFile(file.path, file.len);
+                renew_file.users = file.users-1;
+                ArrivalSeq.remove(idx);
+                ArrivalSeq.add(renew_file);
                 break;
             }
         }
@@ -96,8 +104,6 @@ public class LRUCache{
     public synchronized List Evict(){
         int idx = 0;
         List<String> victims = new CopyOnWriteArrayList<String>();
-        // while(available<0){
-        
         for(CacheFile file: ArrivalSeq){
             if (file.users==0){
                 victims.add(file.path);
@@ -107,7 +113,6 @@ public class LRUCache{
             idx += 1;
         }
         RemoveVictims(victims, false);
-        // }
         return victims;
     }
 
@@ -144,7 +149,9 @@ public class LRUCache{
     // Delete a specific file from cache
     public synchronized void RemoveFileFromProxy(String path, boolean updateLen){
         File file = new File(path);
-        if (updateLen) { available += file.length(); }	
+        if (updateLen) {
+            available += (int)file.length();
+        }	
         file.delete();  // will also delete the corresponding raf
     }
 
@@ -158,6 +165,7 @@ public class LRUCache{
         return -1;
     }
 
+    // Remove all strings indice after "*", which means remove version in file name.
     public synchronized String PathRemoveVersion(String version_path){
         String[] path_split = version_path.split("\\*");
         String path = path_split[0];

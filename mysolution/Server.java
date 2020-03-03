@@ -114,7 +114,6 @@ public class Server extends UnicastRemoteObject implements ServerIntf {  // Serv
     
     // Delete a file
     public int unlink(String path) throws RemoteException{
-        System.out.println("UNLINK");
         String server_path = server_root+path;
         try {
             File file = new File(server_path);
